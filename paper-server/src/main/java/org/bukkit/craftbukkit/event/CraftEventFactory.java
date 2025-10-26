@@ -1,5 +1,8 @@
 package org.bukkit.craftbukkit.event;
 
+
+import io.goatmc.core.MainThreadTaskQueue;
+import net.minecraft.server.MinecraftServer;
 import com.google.common.base.Function;
 import com.google.common.base.Functions;
 import com.google.common.base.Preconditions;
@@ -2069,23 +2072,36 @@ public class CraftEventFactory {
         return event;
     }
 
-    public static void callEntityRemoveEvent(Entity entity, EntityRemoveEvent.Cause cause) {
-        if (entity instanceof ServerPlayer) {
-            return; // Don't call for player
+    public static void callEntityRemoveEvent(net.minecraft.world.entity.Entity entity, org.bukkit.event.entity.EntityRemoveEvent.Cause cause) {
+        // ========================================================
+        // НАЧАЛО НАШИХ ИЗМЕНЕНИЙ
+        // ========================================================
+
+        // Шаг 1: Создаем объект события, как и раньше.
+        // Делаем его 'final', чтобы его можно было безопасно использовать в лямбда-выражении.
+        final org.bukkit.event.entity.EntityRemoveEvent event = new org.bukkit.event.entity.EntityRemoveEvent(entity.getBukkitEntity(), cause);
+
+        // Шаг 2: ГЛАВНАЯ ПРОВЕРКА. Мы спрашиваем у сервера: "Текущий поток, в котором
+        // выполняется этот код, - это твой основной поток?"
+        if (MinecraftServer.getServer().isSameThread()) {
+            // ВАРИАНТ А: ДА, это основной поток.
+            // Все безопасно. Мы можем вызывать событие напрямую, как это было раньше.
+            // Никакой магии не требуется.
+            entity.getBukkitEntity().getServer().getPluginManager().callEvent(event);
+        } else {
+            // ВАРИАНТ Б: НЕТ, это один из наших рабочих потоков (например, pool-10-thread-3).
+            // Прямой вызов 'callEvent' приведет к крашу!
+            // Поэтому мы создаем новую задачу (Runnable) и отправляем ее в наш "почтовый ящик".
+            MainThreadTaskQueue.queueTask(() -> {
+                // Этот код не выполнится немедленно. Он будет ждать в очереди,
+                // пока основной поток сервера не заберет его и не выполнит сам.
+                entity.getBukkitEntity().getServer().getPluginManager().callEvent(event);
+            });
         }
 
-        if (cause == null) {
-            // Don't call if cause is null
-            // This can happen when an entity changes dimension,
-            // the entity gets removed during world gen or
-            // the entity is removed before it is even spawned (when the spawn event is cancelled for example)
-            return;
-        }
-
-        // Do not call during generation.
-        if (entity.generation) return;
-
-        Bukkit.getPluginManager().callEvent(new EntityRemoveEvent(entity.getBukkitEntity(), cause));
+        // ========================================================
+        // КОНЕЦ НАШИХ ИЗМЕНЕНИЙ
+        // ========================================================
     }
 
     public static void callPlayerUseUnknownEntityEvent(net.minecraft.world.entity.player.Player player, net.minecraft.network.protocol.game.ServerboundInteractPacket packet, InteractionHand hand, @Nullable net.minecraft.world.phys.Vec3 vector) {

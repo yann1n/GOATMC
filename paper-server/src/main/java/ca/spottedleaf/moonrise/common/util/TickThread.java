@@ -1,6 +1,7 @@
 package ca.spottedleaf.moonrise.common.util;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel; // <--- ДОБАВЛЕН ИМПОРТ
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
@@ -14,6 +15,44 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class TickThread extends Thread {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(TickThread.class);
+
+    // ========================================================
+    // НАЧАЛО НАШИХ ИЗМЕНЕНИЙ
+    // ========================================================
+
+    /**
+     * НОВОЕ ПОЛЕ: ThreadLocal - это специальная переменная. У каждого потока будет
+     * своя собственная, независимая копия этой переменной.
+     * Мы будем использовать ее, чтобы "помечать" рабочие потоки как временные "главные" потоки.
+     */
+    private static final ThreadLocal<Level> CURRENT_TICK_WORLD = new ThreadLocal<>();
+
+    /**
+     * НОВЫЙ МЕТОД (тот самый, которого не хватало):
+     * Этот метод позволяет любому потоку "зарегистрироваться" как главный поток для конкретного мира.
+     * @param world Мир, который этот поток будет обрабатывать, или null, чтобы "разрегистрироваться".
+     */
+    public static void setCurrentTickThread(final Level world) {
+        if (world == null) {
+            CURRENT_TICK_WORLD.remove();
+        } else {
+            CURRENT_TICK_WORLD.set(world);
+        }
+    }
+
+    /**
+     * ИЗМЕНЕННЫЙ МЕТОД: Теперь он проверяет не только тип потока, но и нашу новую ThreadLocal переменную.
+     * @return true, если это основной поток сервера ИЛИ если рабочий поток был временно "помечен" как главный.
+     */
+    public static boolean isTickThread() {
+        // Старая проверка (является ли поток экземпляром TickThread) + новая проверка (установлена ли наша переменная).
+        return Thread.currentThread() instanceof TickThread || CURRENT_TICK_WORLD.get() != null;
+    }
+
+    // ========================================================
+    // КОНЕЦ НАШИХ ИЗМЕНЕНИЙ
+    // ========================================================
+
 
     private static String getThreadContext() {
         return "thread=" + Thread.currentThread().getName();
@@ -33,7 +72,7 @@ public class TickThread extends Thread {
     public static void ensureTickThread(final Level world, final BlockPos pos, final String reason) {
         if (!isTickThreadFor(world, pos)) {
             final String ex = "Thread failed main thread check: " +
-                               reason + ", context=" + getThreadContext() + ", world=" + WorldUtil.getWorldName(world) + ", block_pos=" + pos;
+                reason + ", context=" + getThreadContext() + ", world=" + WorldUtil.getWorldName(world) + ", block_pos=" + pos;
             LOGGER.error(ex, new Throwable());
             throw new IllegalStateException(ex);
         }
@@ -93,7 +132,7 @@ public class TickThread extends Thread {
         }
     }
 
-    public final int id; /* We don't override getId as the spec requires that it be unique (with respect to all other threads) */
+    public final int id;
 
     private static final AtomicInteger ID_GENERATOR = new AtomicInteger();
 
@@ -115,11 +154,11 @@ public class TickThread extends Thread {
     }
 
     public static TickThread getCurrentTickThread() {
-        return (TickThread)Thread.currentThread();
-    }
-
-    public static boolean isTickThread() {
-        return Thread.currentThread() instanceof TickThread;
+        Thread current = Thread.currentThread();
+        if (current instanceof TickThread) {
+            return (TickThread) current;
+        }
+        return null;
     }
 
     public static boolean isShutdownThread() {
